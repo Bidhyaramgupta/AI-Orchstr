@@ -8,13 +8,20 @@ class Message(BaseModel):
     content: str
 
 class ChatRequest(BaseModel):
-    # Keep it OpenAI-ish for familiarity
     messages: List[Message]
     stream: bool = False
 
-    # gateway-level routing hints (optional)
+    # BYO keys (prototype): user can provide 1+ provider keys
+    api_keys: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Map provider->api_key, e.g. {'openai': '...', 'anthropic': '...', 'gemini': '...'}"
+    )
+
+    provider: Literal["openai", "anthropic", "gemini"] = "openai"
+    model: str = "gpt-4o-mini"
+
     preference: Literal["fast", "cheap", "best"] = "best"
-    provider_allowlist: Optional[List[str]] = None  # e.g. ["openai", "anthropic"]
+    provider_allowlist: Optional[List[str]] = None
 
 class ChatResponse(BaseModel):
     request_id: str
