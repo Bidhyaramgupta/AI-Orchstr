@@ -13,29 +13,27 @@ router = APIRouter(tags=["chat"])
 async def chat(req: ChatRequest):
     request_id = str(uuid.uuid4())
 
-    # 1) Validate provider (client error)
+    # provider exists?
     try:
         provider = get_provider(req.provider)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    # 2) Validate user key (client error)
-    if not getattr(req, "user_api_key", None):
-        raise HTTPException(status_code=400, detail="Missing user_api_key")
+    # key exists?
+    api_key = req.api_keys.get(req.provider)
+    if not api_key:
+        raise HTTPException(status_code=400, detail=f"Missing api_keys['{req.provider}']")
 
-    # 3) Call provider (upstream error)
+    # call provider
     try:
         res = await provider.chat(
-            api_key=req.user_api_key,
+            api_key=api_key,
             model=req.model,
             messages=req.messages,
             timeout_s=30.0,
         )
     except Exception as e:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Provider error: {type(e).__name__}",
-        )
+        raise HTTPException(status_code=502, detail=f"Provider error: {type(e).__name__}")
 
     return ChatResponse(
         request_id=request_id,
@@ -50,29 +48,23 @@ async def chat(req: ChatRequest):
 async def chat_stream(req: ChatRequest):
     request_id = str(uuid.uuid4())
 
-    # 1) Validate provider (client error)
     try:
         provider = get_provider(req.provider)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    # 2) Validate user key (client error)
-    if not getattr(req, "user_api_key", None):
-        raise HTTPException(status_code=400, detail="Missing user_api_key")
+    api_key = req.api_keys.get(req.provider)
+    if not api_key:
+        raise HTTPException(status_code=400, detail=f"Missing api_keys['{req.provider}']")
 
     async def event_generator():
         yield {
             "event": "meta",
-            "data": (
-                f'{{"request_id":"{request_id}",'
-                f'"provider":"{req.provider}",'
-                f'"model":"{req.model}"}}'
-            ),
+            "data": f'{{"request_id":"{request_id}","provider":"{req.provider}","model":"{req.model}"}}',
         }
-
         try:
             async for tok in provider.stream_chat(
-                api_key=req.user_api_key,
+                api_key=api_key,
                 model=req.model,
                 messages=req.messages,
                 timeout_s=30.0,
