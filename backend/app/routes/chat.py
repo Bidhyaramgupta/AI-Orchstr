@@ -1,10 +1,10 @@
 import uuid
 import asyncio
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from sse_starlette.sse import EventSourceResponse
 
 from app.schemas.chat import ChatRequest, ChatResponse
-from app.providers.registry import get_provider
+from app.routing.router import run_with_fallback, stream_with_fallback
 
 router = APIRouter(tags=["chat"])
 
@@ -13,34 +13,20 @@ router = APIRouter(tags=["chat"])
 async def chat(req: ChatRequest):
     request_id = str(uuid.uuid4())
 
-    # provider exists?
-    try:
-        provider = get_provider(req.provider)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    # key exists?
-    api_key = req.api_keys.get(req.provider)
-    if not api_key:
-        raise HTTPException(status_code=400, detail=f"Missing api_keys['{req.provider}']")
-
-    # call provider
-    try:
-        res = await provider.chat(
-            api_key=api_key,
-            model=req.model,
-            messages=req.messages,
-            timeout_s=30.0,
-        )
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Provider error: {type(e).__name__}")
+    provider, model, text = await run_with_fallback(
+        api_keys=req.api_keys,
+        messages=req.messages,
+        preference=req.preference,
+        provider_allowlist=req.provider_allowlist,
+        timeout_s=30.0,
+    )
 
     return ChatResponse(
         request_id=request_id,
-        provider=res["provider"],
-        model=res["model"],
-        output_text=res["output_text"],
-        meta={"stream": False},
+        provider=provider,
+        model=model,
+        output_text=text,
+        meta={"stream": False, "routing": req.preference},
     )
 
 
@@ -48,32 +34,19 @@ async def chat(req: ChatRequest):
 async def chat_stream(req: ChatRequest):
     request_id = str(uuid.uuid4())
 
-    try:
-        provider = get_provider(req.provider)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    api_key = req.api_keys.get(req.provider)
-    if not api_key:
-        raise HTTPException(status_code=400, detail=f"Missing api_keys['{req.provider}']")
-
     async def event_generator():
-        yield {
-            "event": "meta",
-            "data": f'{{"request_id":"{request_id}","provider":"{req.provider}","model":"{req.model}"}}',
-        }
-        try:
-            async for tok in provider.stream_chat(
-                api_key=api_key,
-                model=req.model,
-                messages=req.messages,
-                timeout_s=30.0,
-            ):
-                yield {"event": "token", "data": tok}
-        except Exception as e:
-            yield {"event": "error", "data": f"Provider error: {type(e).__name__}"}
-        finally:
-            await asyncio.sleep(0.01)
-            yield {"event": "done", "data": ""}
+        # Include request_id first (gateway metadata)
+        yield {"event": "meta", "data": f'{{"request_id":"{request_id}"}}'}
+
+        async for ev in stream_with_fallback(
+            api_keys=req.api_keys,
+            messages=req.messages,
+            preference=req.preference,
+            provider_allowlist=req.provider_allowlist,
+            timeout_s=30.0,
+        ):
+            yield ev
+
+        await asyncio.sleep(0.01)
 
     return EventSourceResponse(event_generator())

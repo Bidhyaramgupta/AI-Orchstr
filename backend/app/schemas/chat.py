@@ -11,14 +11,10 @@ class ChatRequest(BaseModel):
     messages: List[Message]
     stream: bool = False
 
-    # BYO keys (prototype): user can provide 1+ provider keys
-    api_keys: Dict[str, str] = Field(
-        default_factory=dict,
-        description="Map provider->api_key, e.g. {'openai': '...', 'anthropic': '...', 'gemini': '...'}"
-    )
+    api_keys: Dict[str, str] = Field(default_factory=dict)  # <-- add this
 
-    provider: Literal["openai", "anthropic", "gemini"] = "openai"
-    model: str = "gpt-4o-mini"
+    provider: Literal["openai", "anthropic", "gemini"] = "gemini"
+    model: str = "gemini-2.5-flash-lite"
 
     preference: Literal["fast", "cheap", "best"] = "best"
     provider_allowlist: Optional[List[str]] = None
