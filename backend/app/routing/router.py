@@ -8,6 +8,15 @@ from app.schemas.chat import Message
 from app.providers.registry import get_provider
 from app.routing.catalog import CATALOG
 from app.routing.circuit_breaker import breaker
+from app.core.redis_client import get_redis
+from app.ratelimit.limiter import reserve, raise_429
+
+# MVP limits (tune later)
+# rpm: requests per minute bucket => capacity=RPM, refill_per_sec=RPM/60, cost=1 per request
+DEFAULT_RPM = 30
+
+# tpm-like: "units" per minute (we’ll estimate tokens crudely later)
+DEFAULT_UNITS_PER_MIN = 20000
 
 
 @dataclass
@@ -64,6 +73,43 @@ async def run_with_fallback(
         prov = get_provider(attempt.provider)
         key = pick_key(api_keys, attempt.provider)
 
+        r = await get_redis()
+
+        # Identify user. For MVP use a deterministic string.
+        # Later: real user_id from auth.
+        user_key = "anon"  # replace later
+
+        # 1) requests/minute limit
+        rpm_res = await reserve(
+            r,
+            user_key=user_key,
+            provider=attempt.provider,
+            model=attempt.model,
+            kind="rpm",
+            capacity=DEFAULT_RPM,
+            refill_per_sec=DEFAULT_RPM / 60.0,
+            cost=1,
+        )
+        if not rpm_res.allowed:
+            raise_429(rpm_res, "rpm")
+
+        # 2) units/minute limit (token-like). MVP: use a rough estimate.
+        # For now charge a fixed cost per request (you can improve next).
+        unit_cost = 1000
+
+        tpm_res = await reserve(
+            r,
+            user_key=user_key,
+            provider=attempt.provider,
+            model=attempt.model,
+            kind="units",
+            capacity=DEFAULT_UNITS_PER_MIN,
+            refill_per_sec=DEFAULT_UNITS_PER_MIN / 60.0,
+            cost=unit_cost,
+        )
+        if not tpm_res.allowed:
+            raise_429(tpm_res, "units")
+
         try:
             res = await prov.chat(
                 api_key=key,
@@ -108,6 +154,42 @@ async def stream_with_fallback(
         prov = get_provider(attempt.provider)
         try:
             key = pick_key(api_keys, attempt.provider)
+            r = await get_redis()
+
+            # Identify user. For MVP use a deterministic string.
+            # Later: real user_id from auth.
+            user_key = "anon"  # replace later
+
+            # 1) requests/minute limit
+            rpm_res = await reserve(
+                r,
+                user_key=user_key,
+                provider=attempt.provider,
+                model=attempt.model,
+                kind="rpm",
+                capacity=DEFAULT_RPM,
+                refill_per_sec=DEFAULT_RPM / 60.0,
+                cost=1,
+            )
+            if not rpm_res.allowed:
+                raise_429(rpm_res, "rpm")
+
+            # 2) units/minute limit (token-like). MVP: use a rough estimate.
+            # For now charge a fixed cost per request (you can improve next).
+            unit_cost = 1000
+
+            tpm_res = await reserve(
+                r,
+                user_key=user_key,
+                provider=attempt.provider,
+                model=attempt.model,
+                kind="units",
+                capacity=DEFAULT_UNITS_PER_MIN,
+                refill_per_sec=DEFAULT_UNITS_PER_MIN / 60.0,
+                cost=unit_cost,
+            )
+            if not tpm_res.allowed:
+                raise_429(tpm_res, "units")
         except HTTPException as he:
             # Missing key: treat as “skip provider” not “system failure”
             continue
